@@ -1,0 +1,119 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Flower Species Detection</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+    <nav class="navbar">
+        <h2>🌸 FlowerDetect AI</h2>
+        <span>Flower Species Recognition</span>
+    </nav>
+
+    <main class="container">
+
+        <section class="hero">
+            <p class="tag">AI POWERED FLOWER IDENTIFICATION</p>
+
+            <h1>
+                Discover the Beauty<br>
+                Behind Every Flower
+            </h1>
+
+            <p class="description">
+                Upload a flower image and let our CNN model
+                identify its species and botanical name.
+            </p>
+        </section>
+
+        <section class="upload-card">
+
+            <h2>Upload Flower Image</h2>
+
+            <p>Select a clear image of a flower.</p>
+
+            <form method="POST"
+                  enctype="multipart/form-data">
+
+                <div class="upload-area">
+
+                    <div class="upload-icon">🌺</div>
+
+                    <label for="file">
+                        Choose Flower Image
+                    </label>
+
+                    <input type="file"
+                           id="file"
+                           name="file"
+                           accept="image/jpeg,image/png,image/jpg"
+                           required>
+
+                    <p>Supported formats: JPG, JPEG, PNG</p>
+
+                </div>
+
+                <button type="submit">
+                    Identify Flower Species
+                </button>
+
+            </form>
+
+            {% if error %}
+                <div class="error">
+                    {{ error }}
+                </div>
+            {% endif %}
+
+            {% if prediction %}
+
+                <div class="result">
+
+                    <h2>Prediction Result</h2>
+
+                    <p class="result-label">
+                        Common Flower Name
+                    </p>
+
+                    <h1>{{ prediction }}</h1>
+
+                    <p class="result-label">
+                        Botanical Name
+                    </p>
+
+                    <h2 class="botanical-name">
+                        <i>{{ botanical_name }}</i>
+                    </h2>
+
+                    <p class="confidence">
+                        Model Confidence:
+                        <strong>{{ confidence }}%</strong>
+                    </p>
+
+                    <p class="note">
+                        This is an AI-based prediction.
+                        Results may vary depending on image quality.
+                    </p>
+
+                </div>
+
+            {% endif %}
+
+        </section>
+
+    </main>
+
+    <footer>
+        Flower Species Detection | CNN Based Machine Learning Project
+    </footer>
+
+</body>
+</html>
