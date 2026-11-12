@@ -6,20 +6,25 @@ import numpy as np
 from PIL import Image
 import io
 import os
+import time
 
 app = Flask(__name__)
 
 # Configuration
 BASE_DIR = Path(__file__).resolve().parent
-
 MODEL_PATH = BASE_DIR / "model" / "flower_species_model.keras"
 
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-# Load trained flower model
+# Load model only once when application starts
+print("Loading flower detection model...")
+load_start = time.perf_counter()
+
 model = tf.keras.models.load_model(MODEL_PATH)
 
-# Class names in alphabetical training order
+print(f"Model loaded in {time.perf_counter() - load_start:.2f} seconds")
+
+# Flower classes - preserve training order
 class_names = [
     "daisy",
     "dandelion",
@@ -28,12 +33,8 @@ class_names = [
     "tulip"
 ]
 
-# Validate model output
 if len(class_names) != model.output_shape[-1]:
-    raise ValueError(
-        f"Class mismatch: {len(class_names)} classes found, "
-        f"but model has {model.output_shape[-1]} outputs."
-    )
+    raise ValueError("Model output and class count mismatch!")
 
 # Flower information
 flower_details = {
@@ -73,6 +74,9 @@ def index():
 
     if request.method == "POST":
 
+        request_start = time.perf_counter()
+        app.logger.info("Flower prediction request received")
+
         if "file" not in request.files:
             error = "Please select a flower image."
 
@@ -84,16 +88,23 @@ def index():
 
             else:
                 try:
-                    # Read uploaded image
+                    # Read and decode image
+                    image_start = time.perf_counter()
+
+                    image_bytes = file.read()
+
+                    if not image_bytes:
+                        raise ValueError("Empty image uploaded")
+
                     image = Image.open(
-                        io.BytesIO(file.read())
+                        io.BytesIO(image_bytes)
                     ).convert("RGB")
 
-                    # Resize image
+                    # Resize to model input dimensions
                     image = image.resize((224, 224))
 
                     # Convert to NumPy array
-                    image_array = np.array(
+                    image_array = np.asarray(
                         image, dtype=np.float32
                     )
 
@@ -102,11 +113,21 @@ def index():
                         image_array, axis=0
                     )
 
-                    # Model prediction
-                    predictions = model.predict(
-                        image_array, verbose=0
+                    image_time = time.perf_counter() - image_start
+
+                    # Direct CNN inference
+                    prediction_start = time.perf_counter()
+
+                    predictions = model(
+                        image_array,
+                        training=False
+                    ).numpy()
+
+                    prediction_time = (
+                        time.perf_counter() - prediction_start
                     )
 
+                    # Find predicted flower
                     predicted_index = int(
                         np.argmax(predictions[0])
                     )
@@ -124,11 +145,33 @@ def index():
                         2
                     )
 
+                    total_time = time.perf_counter() - request_start
+
+                    # Performance logs
+                    app.logger.info(
+                        f"Image processing: {image_time:.3f}s"
+                    )
+
+                    app.logger.info(
+                        f"CNN inference: {prediction_time:.3f}s"
+                    )
+
+                    app.logger.info(
+                        f"Total prediction time: {total_time:.3f}s"
+                    )
+
+                    app.logger.info(
+                        f"Predicted flower: {prediction}, "
+                        f"Confidence: {confidence}%"
+                    )
+
                 except Exception as e:
-                    print("Prediction error:", e)
+
+                    app.logger.exception("Prediction failed")
+
                     error = (
                         "Unable to process this image. "
-                        "Please upload a valid image."
+                        "Please upload a valid flower image."
                     )
 
     return render_template(
@@ -140,9 +183,21 @@ def index():
     )
 
 
+@app.errorhandler(413)
+def file_too_large(error):
+    return render_template(
+        "index.html",
+        prediction=None,
+        botanical_name=None,
+        confidence=None,
+        error="Image is too large. Maximum size is 10 MB."
+    ), 413
+
+
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
+        port=int(os.environ.get("PORT", 5001)),
         debug=False
     )
