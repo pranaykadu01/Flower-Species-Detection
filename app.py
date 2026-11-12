@@ -75,104 +75,115 @@ def index():
     if request.method == "POST":
 
         request_start = time.perf_counter()
-        app.logger.info("Flower prediction request received")
+        app.logger.info("========== NEW PREDICTION REQUEST ==========")
 
-        if "file" not in request.files:
-            error = "Please select a flower image."
+        try:
+            app.logger.info(
+                "Request received. Content length: %s",
+                request.content_length
+            )
 
-        else:
+            # Read uploaded file
+            app.logger.info("Checking uploaded file...")
+
+            if "file" not in request.files:
+                raise ValueError("No file field found")
+
             file = request.files["file"]
 
             if file.filename == "":
-                error = "Please select a flower image."
+                raise ValueError("No file selected")
 
-            else:
-                try:
-                    # Read and decode image
-                    image_start = time.perf_counter()
+            # Image processing
+            image_start = time.perf_counter()
 
-                    image_bytes = file.read()
+            app.logger.info("Reading image bytes...")
 
-                    if not image_bytes:
-                        raise ValueError("Empty image uploaded")
+            image_bytes = file.read()
 
-                    image = Image.open(
-                        io.BytesIO(image_bytes)
-                    ).convert("RGB")
+            if not image_bytes:
+                raise ValueError("Empty image uploaded")
 
-                    # Resize to model input dimensions
-                    image = image.resize((224, 224))
+            app.logger.info("Image size: %s bytes", len(image_bytes))
 
-                    # Convert to NumPy array
-                    image_array = np.asarray(
-                        image, dtype=np.float32
-                    )
+            app.logger.info("Decoding image...")
 
-                    # Add batch dimension
-                    image_array = np.expand_dims(
-                        image_array, axis=0
-                    )
+            image = Image.open(
+                io.BytesIO(image_bytes)
+            ).convert("RGB")
 
-                    image_time = time.perf_counter() - image_start
+            app.logger.info("Resizing image...")
 
-                    # Direct CNN inference
-                    prediction_start = time.perf_counter()
+            image = image.resize((224, 224))
 
-                    predictions = model(
-                        image_array,
-                        training=False
-                    ).numpy()
+            image_array = np.asarray(
+                image, dtype=np.float32
+            )
 
-                    prediction_time = (
-                        time.perf_counter() - prediction_start
-                    )
+            image_array = np.expand_dims(
+                image_array, axis=0
+            )
 
-                    # Find predicted flower
-                    predicted_index = int(
-                        np.argmax(predictions[0])
-                    )
+            image_time = time.perf_counter() - image_start
 
-                    predicted_class = class_names[predicted_index]
+            app.logger.info(
+                "Image processing completed in %.3f seconds",
+                image_time
+            )
 
-                    # Get flower information
-                    details = flower_details[predicted_class]
+            # CNN prediction
+            app.logger.info("STARTING CNN INFERENCE...")
 
-                    prediction = details["common_name"]
-                    botanical_name = details["botanical_name"]
+            prediction_start = time.perf_counter()
 
-                    confidence = round(
-                        float(predictions[0][predicted_index]) * 100,
-                        2
-                    )
+            predictions = model(
+                image_array,
+                training=False
+            ).numpy()
 
-                    total_time = time.perf_counter() - request_start
+            prediction_time = time.perf_counter() - prediction_start
 
-                    # Performance logs
-                    app.logger.info(
-                        f"Image processing: {image_time:.3f}s"
-                    )
+            app.logger.info(
+                "CNN inference completed in %.3f seconds",
+                prediction_time
+            )
 
-                    app.logger.info(
-                        f"CNN inference: {prediction_time:.3f}s"
-                    )
+            # Classification
+            predicted_index = int(
+                np.argmax(predictions[0])
+            )
 
-                    app.logger.info(
-                        f"Total prediction time: {total_time:.3f}s"
-                    )
+            predicted_class = class_names[predicted_index]
 
-                    app.logger.info(
-                        f"Predicted flower: {prediction}, "
-                        f"Confidence: {confidence}%"
-                    )
+            details = flower_details[predicted_class]
 
-                except Exception as e:
+            prediction = details["common_name"]
+            botanical_name = details["botanical_name"]
 
-                    app.logger.exception("Prediction failed")
+            confidence = round(
+                float(predictions[0][predicted_index]) * 100,
+                2
+            )
 
-                    error = (
-                        "Unable to process this image. "
-                        "Please upload a valid flower image."
-                    )
+            total_time = time.perf_counter() - request_start
+
+            app.logger.info("Predicted flower: %s", prediction)
+            app.logger.info("Confidence: %.2f%%", confidence)
+            app.logger.info(
+                "TOTAL REQUEST TIME: %.3f seconds",
+                total_time
+            )
+
+            app.logger.info("========== REQUEST COMPLETED ==========")
+
+        except Exception:
+            app.logger.exception("PREDICTION FAILED")
+
+            error = (
+                "Unable to process this image. "
+                "Please upload a valid flower image."
+            )
+
 
     return render_template(
         "index.html",
