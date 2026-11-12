@@ -3,28 +3,61 @@ from flask import Flask, render_template, request
 from pathlib import Path
 import tensorflow as tf
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import io
 import os
 import time
+import logging
+
+# ==========================================
+# FLASK CONFIGURATION
+# ==========================================
 
 app = Flask(__name__)
 
-# Configuration
 BASE_DIR = Path(__file__).resolve().parent
+
 MODEL_PATH = BASE_DIR / "model" / "flower_species_model.keras"
 
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-# Load model only once when application starts
-print("Loading flower detection model...")
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+
+app.logger.setLevel(logging.INFO)
+
+
+# ==========================================
+# LOAD TRAINED CNN MODEL
+# ==========================================
+
+print("==========================================")
+print("Loading Flower Detection Model...")
+print("==========================================")
+
 load_start = time.perf_counter()
+
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(
+        f"Model file not found: {MODEL_PATH}"
+    )
 
 model = tf.keras.models.load_model(MODEL_PATH)
 
-print(f"Model loaded in {time.perf_counter() - load_start:.2f} seconds")
+load_time = time.perf_counter() - load_start
 
-# Flower classes - preserve training order
+print(f"Model loaded successfully in {load_time:.2f} seconds")
+
+# ==========================================
+# FLOWER CLASSES
+# ==========================================
+
+# IMPORTANT:
+# Preserve the exact class order used during training.
+
 class_names = [
     "daisy",
     "dandelion",
@@ -34,35 +67,197 @@ class_names = [
 ]
 
 if len(class_names) != model.output_shape[-1]:
-    raise ValueError("Model output and class count mismatch!")
+    raise ValueError(
+        f"Class mismatch: {len(class_names)} classes, "
+        f"but model has {model.output_shape[-1]} outputs."
+    )
 
-# Flower information
+
+# ==========================================
+# FLOWER INFORMATION
+# ==========================================
+
 flower_details = {
+
     "daisy": {
         "common_name": "Daisy",
         "botanical_name": "Bellis perennis"
     },
+
     "dandelion": {
         "common_name": "Dandelion",
         "botanical_name": "Taraxacum officinale"
     },
+
     "rose": {
         "common_name": "Rose",
         "botanical_name": "Rosa spp."
     },
+
     "sunflower": {
         "common_name": "Sunflower",
         "botanical_name": "Helianthus annuus"
     },
+
     "tulip": {
         "common_name": "Tulip",
         "botanical_name": "Tulipa spp."
     }
+
 }
 
-print("Flower model loaded successfully!")
-print("Available classes:", class_names)
+print("Available flower classes:", class_names)
+print("Flower model initialization completed!")
 
+
+# ==========================================
+# IMAGE PREPROCESSING
+# ==========================================
+
+def preprocess_image(image_bytes):
+
+    app.logger.info("Starting image preprocessing")
+
+    # Decode uploaded image
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    )
+
+    # Check image format
+    if image.format not in ("JPEG", "PNG"):
+        raise ValueError("Unsupported image format")
+
+    # Convert to RGB
+    image = image.convert("RGB")
+
+    app.logger.info(
+        "Original image dimensions: %s",
+        image.size
+    )
+
+    # Resize image to CNN input size
+    image = image.resize((224, 224))
+
+    # Convert to NumPy array
+    image_array = np.asarray(
+        image,
+        dtype=np.float32
+    )
+
+    # Add batch dimension
+    image_array = np.expand_dims(
+        image_array,
+        axis=0
+    )
+
+    app.logger.info(
+        "Processed image shape: %s",
+        image_array.shape
+    )
+
+    app.logger.info(
+        "Image preprocessing completed"
+    )
+
+    return image_array
+
+
+# ==========================================
+# FLOWER PREDICTION FUNCTION
+# ==========================================
+
+def predict_flower(image_array):
+
+    app.logger.info("STARTING CNN INFERENCE")
+
+    prediction_start = time.perf_counter()
+
+    # Run trained CNN model
+    predictions = model(
+        image_array,
+        training=False
+    )
+
+    # Convert TensorFlow output to NumPy
+    predictions = np.asarray(
+        predictions.numpy()
+    )
+
+    prediction_time = (
+        time.perf_counter() - prediction_start
+    )
+
+    app.logger.info(
+        "CNN inference completed in %.3f seconds",
+        prediction_time
+    )
+
+    # Validate model output
+    if predictions.ndim != 2:
+        raise ValueError(
+            f"Unexpected prediction dimensions: {predictions.shape}"
+        )
+
+    if predictions.shape[0] != 1:
+        raise ValueError(
+            "Unexpected prediction batch size"
+        )
+
+    if predictions.shape[1] != len(class_names):
+        raise ValueError(
+            "Model prediction count does not match flower classes"
+        )
+
+    if not np.all(np.isfinite(predictions)):
+        raise ValueError(
+            "Model returned invalid prediction values"
+        )
+
+    app.logger.info(
+        "Raw prediction values: %s",
+        predictions[0].tolist()
+    )
+
+    # Find highest prediction
+    predicted_index = int(
+        np.argmax(predictions[0])
+    )
+
+    predicted_class = class_names[predicted_index]
+
+    # Get flower details
+    details = flower_details[predicted_class]
+
+    common_name = details["common_name"]
+
+    botanical_name = details["botanical_name"]
+
+    confidence = round(
+        float(predictions[0][predicted_index]) * 100,
+        2
+    )
+
+    app.logger.info(
+        "PREDICTED FLOWER: %s",
+        common_name
+    )
+
+    app.logger.info(
+        "BOTANICAL NAME: %s",
+        botanical_name
+    )
+
+    app.logger.info(
+        "CONFIDENCE: %.2f%%",
+        confidence
+    )
+
+    return common_name, botanical_name, confidence
+
+
+# ==========================================
+# HOME AND PREDICTION ROUTE
+# ==========================================
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -72,118 +267,197 @@ def index():
     confidence = None
     error = None
 
-    if request.method == "POST":
+    # ======================================
+    # GET REQUEST
+    # ======================================
 
-        request_start = time.perf_counter()
-        app.logger.info("========== NEW PREDICTION REQUEST ==========")
+    if request.method == "GET":
 
-        try:
-            app.logger.info(
-                "Request received. Content length: %s",
-                request.content_length
+        app.logger.info(
+            "Homepage accessed successfully"
+        )
+
+        return render_template(
+            "index.html",
+            prediction=None,
+            botanical_name=None,
+            confidence=None,
+            error=None
+        )
+
+    # ======================================
+    # POST REQUEST
+    # ======================================
+
+    request_start = time.perf_counter()
+
+    app.logger.info(
+        "=========================================="
+    )
+
+    app.logger.info(
+        "NEW FLOWER PREDICTION REQUEST RECEIVED"
+    )
+
+    app.logger.info(
+        "Request content length: %s bytes",
+        request.content_length
+    )
+
+    try:
+
+        # ----------------------------------
+        # STEP 1: CHECK UPLOADED FILE
+        # ----------------------------------
+
+        app.logger.info(
+            "STEP 1: Checking uploaded file"
+        )
+
+        if "file" not in request.files:
+
+            raise ValueError(
+                "No file field found in request"
             )
 
-            # Read uploaded file
-            app.logger.info("Checking uploaded file...")
+        file = request.files["file"]
 
-            if "file" not in request.files:
-                raise ValueError("No file field found")
+        if not file or file.filename == "":
 
-            file = request.files["file"]
-
-            if file.filename == "":
-                raise ValueError("No file selected")
-
-            # Image processing
-            image_start = time.perf_counter()
-
-            app.logger.info("Reading image bytes...")
-
-            image_bytes = file.read()
-
-            if not image_bytes:
-                raise ValueError("Empty image uploaded")
-
-            app.logger.info("Image size: %s bytes", len(image_bytes))
-
-            app.logger.info("Decoding image...")
-
-            image = Image.open(
-                io.BytesIO(image_bytes)
-            ).convert("RGB")
-
-            app.logger.info("Resizing image...")
-
-            image = image.resize((224, 224))
-
-            image_array = np.asarray(
-                image, dtype=np.float32
+            raise ValueError(
+                "No image selected"
             )
 
-            image_array = np.expand_dims(
-                image_array, axis=0
+        app.logger.info(
+            "Uploaded filename: %s",
+            file.filename
+        )
+
+        # ----------------------------------
+        # STEP 2: READ IMAGE
+        # ----------------------------------
+
+        app.logger.info(
+            "STEP 2: Reading image bytes"
+        )
+
+        image_bytes = file.read()
+
+        if not image_bytes:
+
+            raise ValueError(
+                "Uploaded image is empty"
             )
 
-            image_time = time.perf_counter() - image_start
+        app.logger.info(
+            "Image received: %s bytes",
+            len(image_bytes)
+        )
 
-            app.logger.info(
-                "Image processing completed in %.3f seconds",
-                image_time
-            )
+        # ----------------------------------
+        # STEP 3: PREPROCESS IMAGE
+        # ----------------------------------
 
-            # CNN prediction
-            app.logger.info("STARTING CNN INFERENCE...")
+        app.logger.info(
+            "STEP 3: Image preprocessing started"
+        )
 
-            prediction_start = time.perf_counter()
+        image_start = time.perf_counter()
 
-            predictions = model(
-                image_array,
-                training=False
-            ).numpy()
+        image_array = preprocess_image(
+            image_bytes
+        )
 
-            prediction_time = time.perf_counter() - prediction_start
+        image_time = (
+            time.perf_counter() - image_start
+        )
 
-            app.logger.info(
-                "CNN inference completed in %.3f seconds",
-                prediction_time
-            )
+        app.logger.info(
+            "Image processing time: %.3f seconds",
+            image_time
+        )
 
-            # Classification
-            predicted_index = int(
-                np.argmax(predictions[0])
-            )
+        # ----------------------------------
+        # STEP 4: CNN PREDICTION
+        # ----------------------------------
 
-            predicted_class = class_names[predicted_index]
+        app.logger.info(
+            "STEP 4: Sending image to CNN model"
+        )
 
-            details = flower_details[predicted_class]
+        prediction, botanical_name, confidence = predict_flower(
+            image_array
+        )
 
-            prediction = details["common_name"]
-            botanical_name = details["botanical_name"]
+        # ----------------------------------
+        # STEP 5: COMPLETED
+        # ----------------------------------
 
-            confidence = round(
-                float(predictions[0][predicted_index]) * 100,
-                2
-            )
+        total_time = (
+            time.perf_counter() - request_start
+        )
 
-            total_time = time.perf_counter() - request_start
+        app.logger.info(
+            "=========================================="
+        )
 
-            app.logger.info("Predicted flower: %s", prediction)
-            app.logger.info("Confidence: %.2f%%", confidence)
-            app.logger.info(
-                "TOTAL REQUEST TIME: %.3f seconds",
-                total_time
-            )
+        app.logger.info(
+            "PREDICTION COMPLETED SUCCESSFULLY"
+        )
 
-            app.logger.info("========== REQUEST COMPLETED ==========")
+        app.logger.info(
+            "Flower: %s",
+            prediction
+        )
 
-        except Exception:
-            app.logger.exception("PREDICTION FAILED")
+        app.logger.info(
+            "Confidence: %.2f%%",
+            confidence
+        )
 
-            error = (
-                "Unable to process this image. "
-                "Please upload a valid flower image."
-            )
+        app.logger.info(
+            "Total request time: %.3f seconds",
+            total_time
+        )
 
+        app.logger.info(
+            "=========================================="
+        )
+
+    # ======================================
+    # ERROR HANDLING
+    # ======================================
+
+    except UnidentifiedImageError:
+
+        app.logger.exception(
+            "INVALID IMAGE FILE"
+        )
+
+        error = (
+            "Invalid image file. "
+            "Please upload a valid JPG or PNG image."
+        )
+
+    except Exception as e:
+
+        app.logger.exception(
+            "FLOWER PREDICTION FAILED: %s",
+            str(e)
+        )
+
+        error = (
+            "Unable to identify the flower. "
+            "Please try another clear flower image."
+        )
+
+    # ======================================
+    # RETURN RESULT
+    # ======================================
+
+    app.logger.info(
+        "Returning response to browser"
+    )
 
     return render_template(
         "index.html",
@@ -194,8 +468,17 @@ def index():
     )
 
 
+# ==========================================
+# FILE SIZE ERROR HANDLER
+# ==========================================
+
 @app.errorhandler(413)
 def file_too_large(error):
+
+    app.logger.warning(
+        "Uploaded image exceeded maximum file size"
+    )
+
     return render_template(
         "index.html",
         prediction=None,
@@ -205,10 +488,28 @@ def file_too_large(error):
     ), 413
 
 
+# ==========================================
+# APPLICATION START
+# ==========================================
+
 if __name__ == "__main__":
+
+    port = int(
+        os.environ.get("PORT", 5001)
+    )
+
+    app.logger.info(
+        "Starting Flower Species Detection application"
+    )
+
+    app.logger.info(
+        "Application port: %s",
+        port
+    )
 
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5001)),
-        debug=False
+        port=port,
+        debug=False,
+        threaded=True
     )
